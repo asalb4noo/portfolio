@@ -1,0 +1,13 @@
+{
+  "title": "Green Trool",
+  "category": "Uncategorised",
+  "image": "01-green-trool.jpg",
+  "gallery": [
+    "01-green-trool-g01.jpg",
+    "01-green-trool-g02.jpg",
+    "01-green-trool-g03.jpg",
+    "01-green-trool-g04.jpg",
+    "01-green-trool-g05.jpg"
+  ],
+  "order": 1
+}

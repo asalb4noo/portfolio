@@ -1,0 +1,12 @@
+{
+  "title": "Ostrich",
+  "category": "Uncategorised",
+  "image": "04-ostrich.jpg",
+  "gallery": [
+    "04-ostrich-g01.jpg",
+    "04-ostrich-g02.jpg",
+    "04-ostrich-g03.jpg",
+    "04-ostrich-g04.jpg"
+  ],
+  "order": 4
+}

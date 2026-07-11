@@ -1,0 +1,393 @@
+---
+import { getCollection } from 'astro:content';
+import { Image, getImage } from 'astro:assets';
+import { getArtworkImage } from '../lib/media';
+// Site-wide copy (title, hero text, footer, …). Editable from the local admin
+// app ("Site text"), which writes this file. Everything user-facing on the page
+// reads from here rather than being hard-coded.
+import site from '../data/site.json';
+
+// The hero heading may contain line breaks (stored as "\n"); render each on its
+// own line so the artist can control the wrap from the admin.
+const headingLines = site.heroHeading.split('\n');
+
+const artworks = (await getCollection('artworks')).sort(
+  (a, b) => (a.data.order ?? 0) - (b.data.order ?? 0)
+);
+const categories = ['All', ...new Set(artworks.map((a) => a.data.category))];
+
+const hues: Record<string, number> = {
+  Character: 265,
+  Environment: 155,
+  Creature: 330,
+  Vehicle: 32,
+};
+
+// Shape each mosaic cell from the cover's real orientation. A uniform grid can't
+// fit every aspect perfectly, so we bucket the cover into wide / square /
+// portrait / tall and hand back a column + row span; `grid-auto-flow: dense`
+// then packs the varied tiles. Featured pieces get an oversized hero tile.
+// The base row unit is ~half a column (see `.bento` CSS), so a 2-row tile reads
+// as square, a 3-row tile as portrait, etc.
+function tileSpan(w: number, h: number, featured: boolean) {
+  const ar = w / h;
+  let col: number, row: number;
+  if (ar >= 1.45) { col = 2; row = 2; }       // landscape → wide
+  else if (ar <= 0.62) { col = 1; row = 4; }  // tall portrait
+  else if (ar <= 0.85) { col = 1; row = 3; }  // portrait
+  else { col = 1; row = 2; }                  // square-ish
+  if (featured) {                             // hero — bigger, taller if portrait
+    col = 2;
+    row = ar <= 0.85 ? 4 : 3;
+  }
+  return { col, row };
+}
+
+// Resolve each artwork's images. The mosaic card shows the cover (`image`);
+// the lightbox browses the whole set — cover first, then any `gallery` images.
+// For each slide we precompute a large variant (lightbox) and a small one
+// (thumbnail strip). astro:assets generates responsive WebP at build.
+const items = await Promise.all(
+  artworks.map(async (a) => {
+    const img = getArtworkImage(a.data.image);
+    const names = [a.data.image, ...(a.data.gallery ?? [])];
+    const slides = await Promise.all(
+      names.map(async (name) => {
+        const src = getArtworkImage(name);
+        const full = await getImage({ src, width: 1600, format: 'webp', quality: 80 });
+        const thumb = await getImage({ src, width: 200, format: 'webp', quality: 70 });
+        return { full: full.src, thumb: thumb.src };
+      })
+    );
+    return { data: a.data, img, slides };
+  })
+);
+
+// Serializable payload for the client-side lightbox.
+const lb = items.map((it) => ({
+  slides: it.slides, // [{ full, thumb }, ...] — cover first
+  title: it.data.title,
+  category: it.data.category,
+  project: it.data.project ?? '',
+  description: it.data.description ?? '',
+  video: it.data.video ?? '',
+}));
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{site.siteTitle}</title>
+    <meta name="description" content={site.metaDescription} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root { --bg: #08080c; --panel: #101019; --ink: #f0f0f5; --muted: #8b8b9a; --line: rgba(255,255,255,0.08); }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: 'Inter', sans-serif; overflow-x: hidden; }
+
+      /* Cursor spotlight */
+      .spotlight { position: fixed; inset: 0; z-index: 1; pointer-events: none; transition: background 0.15s; background: radial-gradient(600px circle at 50% 0%, rgba(120,90,255,0.10), transparent 70%); }
+      .shell { position: relative; z-index: 2; }
+
+      nav {
+        position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between;
+        padding: 1.2rem 2.5rem; background: rgba(8,8,12,0.7); backdrop-filter: blur(14px); border-bottom: 1px solid var(--line);
+      }
+      .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.1rem; letter-spacing: 0.01em; }
+      .brand .dot { color: #7c5cff; }
+      nav .role { font-size: 0.75rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+
+      .hero { padding: 6rem 2.5rem 2.5rem; max-width: 1100px; }
+      .hero .eyebrow {
+        display: inline-block; font-size: 0.78rem; letter-spacing: 0.22em; text-transform: uppercase;
+        color: #c9beff; padding: 0.4rem 0.9rem; border: 1px solid var(--line); border-radius: 999px; margin-bottom: 1.75rem;
+      }
+      .hero h1 {
+        font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: clamp(2.6rem, 8vw, 6rem);
+        line-height: 1; margin: 0; letter-spacing: -0.03em;
+        background: linear-gradient(120deg, #fff 20%, #b7a6ff 60%, #6ee7ff 100%);
+        -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+      }
+      .hero p { margin-top: 1.5rem; max-width: 44ch; color: var(--muted); font-size: 1.1rem; line-height: 1.6; }
+
+      .filters { display: flex; flex-wrap: wrap; gap: 0.6rem; padding: 1.5rem 2.5rem 0; }
+      .filters button {
+        font-family: 'Space Grotesk', sans-serif; font-size: 0.82rem; padding: 0.5rem 1.1rem; border-radius: 999px; cursor: pointer;
+        background: var(--panel); border: 1px solid var(--line); color: var(--muted); transition: all 0.25s;
+      }
+      .filters button.active, .filters button:hover { color: #fff; border-color: #7c5cff; box-shadow: 0 0 18px rgba(124,92,255,0.4); }
+
+      /* Aspect-aware bento. The row unit is ~half a column (12.5vw at 4 cols), so
+         a 2-row tile ≈ square, 3-row ≈ portrait, 4-row ≈ tall — and those shapes
+         stay stable as the viewport scales instead of drifting into letterboxes.
+         Per-tile spans come from the cover's orientation (see `tileSpan`). */
+      .bento { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 12.5vw; gap: 1rem; grid-auto-flow: dense; padding: 2rem 2.5rem 7rem; }
+      .card {
+        --hue: 265; --col: 1; --row: 2; position: relative; overflow: hidden; border-radius: 16px; cursor: pointer;
+        grid-column: span var(--col); grid-row: span var(--row);
+        border: 1px solid var(--line); background: var(--panel);
+        opacity: 0; transform: translateY(26px) scale(0.98);
+        transition: opacity 0.6s ease, transform 0.6s ease, border-color 0.35s, box-shadow 0.35s;
+      }
+      .card.in { opacity: 1; transform: none; }
+      .card img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.7s cubic-bezier(.2,.8,.2,1); filter: saturate(1.05) brightness(0.92); }
+      .card:hover { border-color: hsl(var(--hue) 90% 65%); box-shadow: 0 0 0 1px hsl(var(--hue) 90% 65% / 0.5), 0 18px 50px hsl(var(--hue) 90% 40% / 0.28); }
+      .card:hover img { transform: scale(1.07); filter: saturate(1.15) brightness(1); }
+      .card .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.4rem 1.2rem 1.1rem; background: linear-gradient(to top, rgba(5,5,10,0.9), transparent); }
+      .card .tag {
+        display: inline-block; font-family: 'Space Grotesk', sans-serif; font-size: 0.66rem; font-weight: 600;
+        letter-spacing: 0.08em; text-transform: uppercase; padding: 0.2rem 0.55rem; border-radius: 999px; margin-bottom: 0.5rem;
+        color: hsl(var(--hue) 90% 82%); background: hsl(var(--hue) 90% 60% / 0.18); border: 1px solid hsl(var(--hue) 90% 65% / 0.4);
+      }
+      .card .t { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.05rem; }
+      .card .m { color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+      /* Play badge for pieces that have a video */
+      .card .playbadge {
+        position: absolute; top: 0.9rem; right: 0.9rem; z-index: 3; width: 34px; height: 34px;
+        display: grid; place-items: center; border-radius: 999px; color: #fff; font-size: 0.72rem;
+        background: rgba(8,8,12,0.6); border: 1px solid hsl(var(--hue) 90% 65% / 0.55); backdrop-filter: blur(3px);
+      }
+      /* Count badge for pieces with a gallery (cover + extra images) */
+      .card .countbadge {
+        position: absolute; top: 0.9rem; left: 0.9rem; z-index: 3; height: 34px; padding: 0 0.65rem;
+        display: inline-flex; align-items: center; gap: 0.3rem; border-radius: 999px; color: #fff;
+        font-family: 'Space Grotesk', sans-serif; font-size: 0.74rem; font-weight: 600;
+        background: rgba(8,8,12,0.6); border: 1px solid hsl(var(--hue) 90% 65% / 0.55); backdrop-filter: blur(3px);
+      }
+
+      footer { padding: 3rem 2.5rem 5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
+      footer a { color: #b7a6ff; text-decoration: none; }
+
+      /* Keep tiles from ballooning on very wide screens: more columns, smaller
+         row unit (each ~half of the now-narrower column). */
+      @media (min-width: 1700px) {
+        .bento { grid-template-columns: repeat(5, 1fr); grid-auto-rows: 9.6vw; }
+      }
+      @media (max-width: 1100px) {
+        .bento { grid-template-columns: repeat(3, 1fr); grid-auto-rows: 16vw; }
+      }
+      @media (max-width: 760px) {
+        .bento { grid-template-columns: repeat(2, 1fr); grid-auto-rows: 24vw; }
+        nav, .hero, .filters, .bento { padding-left: 1.25rem; padding-right: 1.25rem; }
+      }
+
+      dialog#lb { border: none; background: transparent; max-width: 100vw; width: 100%; height: 100%; max-height: 100vh; padding: 0; }
+      dialog#lb::backdrop { background: rgba(5,5,10,0.95); backdrop-filter: blur(4px); }
+      .lb-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 3rem 2rem; position: relative; }
+      .lb-inner img, .lb-inner video { max-height: 66vh; max-width: 82vw; object-fit: contain; border-radius: 8px; }
+      .lb-inner video { background: #000; }
+      .lb-meta { margin-top: 1.4rem; text-align: center; max-width: 560px; }
+      .lb-meta h2 { font-family: 'Space Grotesk', sans-serif; margin: 0 0 0.35rem; }
+      .lb-meta .m { color: #b7a6ff; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem; }
+      .lb-meta p { color: #b9b5c8; margin-top: 0.7rem; line-height: 1.55; }
+      .lb-close, .lb-prev, .lb-next { position: absolute; background: none; border: none; font-size: 1.6rem; cursor: pointer; color: #fff; opacity: 0.7; }
+      .lb-close:hover, .lb-prev:hover, .lb-next:hover { opacity: 1; }
+      .lb-close { top: 1.5rem; right: 2rem; }
+      .lb-prev { left: 2rem; top: 50%; }
+      .lb-next { right: 2rem; top: 50%; }
+      /* Position counter ("2 / 5") for a multi-image set */
+      .lb-count {
+        position: absolute; top: 1.6rem; left: 50%; transform: translateX(-50%);
+        font-family: 'Space Grotesk', sans-serif; font-size: 0.78rem; letter-spacing: 0.1em; color: #c9beff;
+        background: rgba(8,8,12,0.6); border: 1px solid var(--line); padding: 0.28rem 0.75rem; border-radius: 999px;
+      }
+      /* Thumbnail strip for jumping around a set */
+      .lb-strip { display: flex; gap: 0.5rem; margin-top: 1.2rem; flex-wrap: wrap; justify-content: center; max-width: 82vw; }
+      .lb-thumb {
+        position: relative; width: 60px; height: 60px; padding: 0; border-radius: 8px; overflow: hidden; cursor: pointer;
+        background: none; border: 2px solid transparent; opacity: 0.5; transition: opacity 0.2s, border-color 0.2s;
+      }
+      .lb-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .lb-thumb.active, .lb-thumb:hover { opacity: 1; border-color: #7c5cff; }
+      .lb-thumb .tv { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 0.85rem; background: rgba(5,5,10,0.4); }
+    </style>
+  </head>
+  <body>
+    <div class="spotlight" id="spot"></div>
+    <div class="shell">
+      <nav>
+        <div class="brand">{site.brand}<span class="dot">.</span></div>
+        <div class="role">{site.role}</div>
+      </nav>
+
+      <header class="hero">
+        <span class="eyebrow">{site.heroEyebrow}</span>
+        <h1>{headingLines.map((line, i) => (<Fragment>{i > 0 && <br />}{line}</Fragment>))}</h1>
+        <p>{site.heroText}</p>
+      </header>
+
+      <div class="filters">
+        {categories.map((c, i) => (
+          <button class={i === 0 ? 'active' : ''} data-cat={c}>{c}</button>
+        ))}
+      </div>
+
+      <div class="bento" id="grid">
+        {items.map((it, i) => {
+          const { col, row } = tileSpan(it.img.width, it.img.height, !!it.data.featured);
+          return (
+            <article class="card" data-cat={it.data.category} data-index={i} style={`--hue:${hues[it.data.category] ?? 265}; --col:${col}; --row:${row}`}>
+              <Image
+                src={it.img}
+                alt={it.data.title}
+                widths={[260, 380, 520, 760, 1040, 1400]}
+                sizes="(max-width: 760px) 50vw, 33vw"
+                format="webp"
+                quality={78}
+                loading={i < 6 ? 'eager' : 'lazy'}
+              />
+              {it.data.video && <span class="playbadge">▶</span>}
+              {it.data.gallery && it.data.gallery.length > 0 && (
+                <span class="countbadge">⧉ {it.data.gallery.length + 1}</span>
+              )}
+              <div class="cap">
+                <span class="tag">{it.data.category}</span>
+                <div class="t">{it.data.title}</div>
+                <div class="m">{it.data.project}</div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <footer>
+        <span>{site.footerText}</span>
+        <a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a>
+      </footer>
+    </div>
+
+    <dialog id="lb">
+      <div class="lb-inner">
+        <button class="lb-close" id="lbClose">✕</button>
+        <div class="lb-count" id="lbCount"></div>
+        <button class="lb-prev" id="lbPrev">‹</button>
+        <button class="lb-next" id="lbNext">›</button>
+        <img id="lbImg" src="" alt="" />
+        <video id="lbVid" controls playsinline loop style="display:none"></video>
+        <div class="lb-meta">
+          <div class="m" id="lbMeta"></div>
+          <h2 id="lbTitle"></h2>
+          <p id="lbDesc"></p>
+        </div>
+        <div class="lb-strip" id="lbStrip"></div>
+      </div>
+    </dialog>
+
+    <script define:vars={{ items: lb }}>
+      // Cursor spotlight
+      const spot = document.getElementById('spot');
+      window.addEventListener('pointermove', (e) => {
+        spot.style.background = `radial-gradient(600px circle at ${e.clientX}px ${e.clientY}px, rgba(124,92,255,0.12), transparent 70%)`;
+      });
+
+      // Scroll reveal
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+      }, { threshold: 0.1 });
+      document.querySelectorAll('.card').forEach((c, i) => { c.style.transitionDelay = `${(i % 4) * 55}ms`; io.observe(c); });
+
+      // Filter
+      const grid = document.getElementById('grid');
+      const filters = document.querySelector('.filters');
+      filters.addEventListener('click', (e) => {
+        const btn = e.target.closest('button'); if (!btn) return;
+        filters.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const cat = btn.dataset.cat;
+        grid.querySelectorAll('.card').forEach((f) => {
+          f.style.display = cat === 'All' || f.dataset.cat === cat ? '' : 'none';
+        });
+      });
+
+      // Lightbox — one open piece at a time; the arrows/thumbnails browse
+      // WITHIN that piece's media set (cover, then gallery images, then video
+      // if present). Closing returns to the grid. (Option A.)
+      const lb = document.getElementById('lb');
+      const lbImg = document.getElementById('lbImg');
+      const lbVid = document.getElementById('lbVid');
+      const lbTitle = document.getElementById('lbTitle');
+      const lbMeta = document.getElementById('lbMeta');
+      const lbDesc = document.getElementById('lbDesc');
+      const lbCount = document.getElementById('lbCount');
+      const lbStrip = document.getElementById('lbStrip');
+      const lbPrev = document.getElementById('lbPrev');
+      const lbNext = document.getElementById('lbNext');
+
+      let current = 0; // index of the open artwork
+      let slide = 0;   // index within its media set
+      let media = [];  // [{ type:'image', full, thumb } | { type:'video', src, thumb }]
+
+      function openAt(i) {
+        current = i;
+        const a = items[i];
+        media = a.slides.map((s) => ({ type: 'image', full: s.full, thumb: s.thumb }));
+        if (a.video) media.push({ type: 'video', src: a.video, thumb: a.slides[0].thumb });
+
+        lbTitle.textContent = a.title;
+        lbMeta.textContent = [a.category, a.project].filter(Boolean).join(' · ');
+        lbDesc.textContent = a.description ?? '';
+
+        // Rebuild the thumbnail strip for this piece.
+        lbStrip.innerHTML = '';
+        media.forEach((m, k) => {
+          const b = document.createElement('button');
+          b.className = 'lb-thumb';
+          b.innerHTML = `<img src="${m.thumb}" alt="" />` + (m.type === 'video' ? '<span class="tv">▶</span>' : '');
+          b.addEventListener('click', () => showSlide(k));
+          lbStrip.appendChild(b);
+        });
+
+        showSlide(0);
+        lb.showModal();
+      }
+
+      function showSlide(j) {
+        slide = (j + media.length) % media.length;
+        const m = media[slide];
+        if (m.type === 'video') {
+          lbVid.src = m.src;
+          lbVid.poster = items[current].slides[0].full;
+          lbVid.style.display = '';
+          lbImg.style.display = 'none';
+        } else {
+          lbVid.pause();
+          lbVid.removeAttribute('src');
+          lbVid.load();
+          lbVid.style.display = 'none';
+          lbImg.src = m.full;
+          lbImg.alt = items[current].title;
+          lbImg.style.display = '';
+        }
+        // Set controls only make sense when there's more than one item.
+        const multi = media.length > 1;
+        lbPrev.style.display = lbNext.style.display = multi ? '' : 'none';
+        lbCount.style.display = multi ? '' : 'none';
+        lbStrip.style.display = multi ? '' : 'none';
+        lbCount.textContent = `${slide + 1} / ${media.length}`;
+        lbStrip.querySelectorAll('.lb-thumb').forEach((b, k) => b.classList.toggle('active', k === slide));
+      }
+
+      grid.querySelectorAll('.card').forEach((f) => f.addEventListener('click', () => openAt(Number(f.dataset.index))));
+      document.getElementById('lbClose').addEventListener('click', () => lb.close());
+      lbPrev.addEventListener('click', () => showSlide(slide - 1));
+      lbNext.addEventListener('click', () => showSlide(slide + 1));
+      lb.addEventListener('click', (e) => { if (e.target === lb) lb.close(); });
+      lb.addEventListener('close', () => lbVid.pause());
+      window.addEventListener('keydown', (e) => {
+        if (!lb.open) return;
+        if (e.key === 'ArrowLeft') showSlide(slide - 1);
+        if (e.key === 'ArrowRight') showSlide(slide + 1);
+      });
+    </script>
+  </body>
+</html>
